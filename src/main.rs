@@ -132,22 +132,61 @@ impl OrderBook {
 }
 
 fn main() {
-    let mut book = OrderBook::new();
+    // 1. Create the OrderBook wrapped in Arc and Mutex
+    let order_book = Arc::new(Mutex::new(OrderBook::new()));
+    println!("Initial empty book created."); // Fixed typo
 
-    // Scenario 1: Simple match
-    println!("--- Scenario 1 ---");
-    book.add_order(Order::new(1, Side::Buy, 100, 10)); // Buy 10 @ 100
-    book.add_order(Order::new(2, Side::Sell, 100, 5)); // Sell 5 @ 100 (Partial fill for Buy order 1)
-    // Expected: Match 5 shares. Bid order 1 has 5 remaining. Ask order 2 is gone.
+    // 2. create a place to store thread handles
+    let mut handles = vec![];
 
-    println!("\n--- Scenario 2 ---");
-    book.add_order(Order::new(3, Side::Sell, 99, 5)); // Sell 5 @ 99 (Should match remaining 5 of order 1)
-    // Expected: Match 5 shares. Bid order 1 is gone. Ask order 3 is gone.
+    // 3. Spawn mutliple threads
+    for i in 0..5 { // spawn 5 threads
+        // 3a. Clone the Arc for the new thread.
+        let book_clone = Arc::clone(&order_book);
 
-    println!("\n--- Scenario 3 ---");
-    book.add_order(Order::new(4, Side::Buy, 102, 20));  // Buy 20 @ 102
-    book.add_order(Order::new(5, Side::Sell, 101, 10)); // Sell 10 @ 101
-    book.add_order(Order::new(6, Side::Sell, 102, 15)); // Sell 15 @ 102
-    // Expected: Order 4 matches all of Order 5 (Buy 10 @ 101). Order 4 has 10 left.
-    // Then: Order 4 (10 left @ 102) matches 10 of Order 6 (Sell 10 @ 102). Order 4 gone. Order 6 has 5 left.
+        // 3b. spawn the thread
+        let handle = thread::spawn(move || {
+            // This code runs in the new thread
+            let thread_id = i + 1; // Simple ID for the thread
+
+            // Create a unique order for this thread
+            let order = if thread_id % 2 == 0 {
+                Order::new(100 + thread_id, Side::Sell, 100 + thread_id as u64, 10 + thread_id as u64)
+            } else {
+                Order::new(100 + thread_id, Side::Buy, 100 - thread_id as u64, 15 + thread_id as u64)
+            };
+            println!("Thread {} trying to add order: {:?}", thread_id, order);
+
+            // --- FIX 1: Use '=' for assignment ---
+            let mut book_guard = book_clone.lock().unwrap();
+            println!("Thread {} acquired lock.", thread_id);
+
+            // Call add_order using the guard
+            book_guard.add_order(order);
+
+            // Lock is released automatically when book_guard goes out of scope
+            println!("Thread {} released lock.", thread_id);
+
+            // Optional delay
+            thread::sleep(Duration::from_millis(10));
+
+        }); // end of thread closure
+
+        handles.push(handle);
+
+    } // end of loop spawning threads
+
+    // 4. Wait for all threads to finish
+    println!("Main thread waiting for worker threads to finish...");
+    for handle in handles { // Renamed 'handlie' to 'handle'
+        handle.join().unwrap(); // Use the loop variable 'handle' here
+    }
+
+    println!("All threads finished."); // Fixed typo
+
+    // 5. Print the final state
+    let final_book = order_book.lock().unwrap();
+    println!("\n--- Final Order Book State ---");
+    println!("{:?}", *final_book); // Use * to dereference the MutexGuard
+
 }
