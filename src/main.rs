@@ -1,3 +1,19 @@
+use axum::{
+    routing::{get, post},
+    Router,
+    response::Json,
+    extract::State,
+};
+
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
+use serde::{Deserialize, Serialize};
+
+
+// Add tracing imports
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -131,62 +147,53 @@ impl OrderBook {
 
 }
 
-fn main() {
-    // 1. Create the OrderBook wrapped in Arc and Mutex
-    let order_book = Arc::new(Mutex::new(OrderBook::new()));
-    println!("Initial empty book created."); // Fixed typo
+#[tokio::main] async fn main() {
+  // --- Basic Loggin Setup
+  tracing_subscriber::registry()
+    .with(
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_|
+                "low_latency_oms=debug,tower_http=debug".into()),
 
-    // 2. create a place to store thread handles
-    let mut handles = vec![];
+            )
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+            
+            tracing::info!("Logger initialized");
+            // --- End Logging Setup ---
 
-    // 3. Spawn mutliple threads
-    for i in 0..5 { // spawn 5 threads
-        // 3a. Clone the Arc for the new thread.
-        let book_clone = Arc::clone(&order_book);
+            // --- Create Shared State (OrderBook) ---
+            // use later
+            let order_book_state = Arc::new(Mutex::new(OrderBook::new()));
 
-        // 3b. spawn the thread
-        let handle = thread::spawn(move || {
-            // This code runs in the new thread
-            let thread_id = i + 1; // Simple ID for the thread
+            tracing::info!("Shared OrderBook state created.");
+            // -- End Shared State ---
 
-            // Create a unique order for this thread
-            let order = if thread_id % 2 == 0 {
-                Order::new(100 + thread_id, Side::Sell, 100 + thread_id as u64, 10 + thread_id as u64)
-            } else {
-                Order::new(100 + thread_id, Side::Buy, 100 - thread_id as u64, 15 + thread_id as u64)
-            };
-            println!("Thread {} trying to add order: {:?}", thread_id, order);
+            // -- Define API Routes ---
+            let app = Router::new()
+                // Simple GET route for testing
+                .route("/", get(root_handler))
 
-            // --- FIX 1: Use '=' for assignment ---
-            let mut book_guard = book_clone.lock().unwrap();
-            println!("Thread {} acquired lock.", thread_id);
+                .with_state(order_book_state); // make the order book available to handlers
 
-            // Call add_order using the guard
-            book_guard.add_order(order);
+            tracing::info!("API routes defined.");
+            // --- End API Routes
 
-            // Lock is released automatically when book_guard goes out of scope
-            println!("Thread {} released lock.", thread_id);
+            // -- Run the server ---
 
-            // Optional delay
-            thread::sleep(Duration::from_millis(10));
+            let addr = SocketAddr::from(([127, 0, 0,1], 3000));
 
-        }); // end of thread closure
+            tracing::info!("Statring server on {}", addr);
 
-        handles.push(handle);
-
-    } // end of loop spawning threads
-
-    // 4. Wait for all threads to finish
-    println!("Main thread waiting for worker threads to finish...");
-    for handle in handles { // Renamed 'handlie' to 'handle'
-        handle.join().unwrap(); // Use the loop variable 'handle' here
-    }
-
-    println!("All threads finished."); // Fixed typo
-
-    // 5. Print the final state
-    let final_book = order_book.lock().unwrap();
-    println!("\n--- Final Order Book State ---");
-    println!("{:?}", *final_book); // Use * to dereference the MutexGuard
-
+            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            axum::serve(listener, app).await.unwrap();
+            // -- End Run Server ---
 }
+
+
+    // --- Basic Handler Function ---
+    // This function will handle requests to the "/" route
+    async  fn root_handler() -> &'static str {
+        tracing::info!("Root handler called");
+        "Hello from Low Latency OMS" // Send a simple text response
+    }
