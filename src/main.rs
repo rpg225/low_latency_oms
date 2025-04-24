@@ -152,53 +152,61 @@ impl OrderBook {
 
     // --- FIX 2: ADD OrderBook Modify and Cancel Methods ---
     pub fn modify_order(&mut self, id: OrderId, new_quantity: u64) -> Option<Order> {
-        // Search bids
-        if let Some(order) = self.bids.iter_mut().find(|o| o.id == id) {
-             if new_quantity == 0 { // Treat quantity 0 as cancellation
-                tracing::warn!(order_id = id, "Modification with quantity 0 requested, use DELETE instead. Cancelling.");
-                return self.cancel_order(id); // Call cancel logic
-             }
+
+        if new_quantity == 0 {
+            // Explicitly handle quantity 0 as a cancellation request.
+            tracing::warn!(order_id = id, "Modification requested with quantity
+            0. Redirecting to cancel order.
+            ");
+            return self.cancel_order(id);
+        }
+
+        if let Some(order) = self.bids.iter_mut().find(|o| o.id == id){
             tracing::info!(order_id = id, old_qty = order.quantity, new_qty = new_quantity, "Modifying bid order quantity");
-            order.quantity = new_quantity;
-            // TODO: In a real system, might need re-sorting or matching check here
-            return Some(order.clone()); // Return the modified order
+                order.quantity = new_quantity;
+
+
+                return Some(order.clone());
         }
-        // Search asks if not found in bids
-        if let Some(order) = self.asks.iter_mut().find(|o| o.id == id) {
-             if new_quantity == 0 { // Treat quantity 0 as cancellation
-                tracing::warn!(order_id = id, "Modification with quantity 0 requested, use DELETE instead. Cancelling.");
-                return self.cancel_order(id); // Call cancel logic
-             }
-            tracing::info!(order_id = id, old_qty = order.quantity, new_qty = new_quantity, "Modifying ask order quantity");
-            order.quantity = new_quantity;
-            // TODO: In a real system, might need re-sorting or matching check here
-            return Some(order.clone()); // Return the modified order
-        }
-        // Order not found
-        tracing::warn!(order_id = id, "Order not found for modification");
+
+        tracing::warn!(order_id = id, "Order not for modification");
         None
+      
     }
 
     pub fn cancel_order(&mut self, id: OrderId) -> Option<Order> {
-         tracing::info!(order_id = id, "Attempting to cancel order");
-         // Find the index in bids
-         if let Some(index) = self.bids.iter().position(|o| o.id == id) {
-             // Remove the order by index and return it
-             // VecDeque::remove is potentially O(n), consider alternatives for high performance
-             let removed = self.bids.remove(index);
-             tracing::info!(order_id = id, "Cancelled bid order");
-             return removed;
-         }
-         // Find the index in asks if not in bids
-         if let Some(index) = self.asks.iter().position(|o| o.id == id) {
-             // Remove the order by index and return it
-             let removed = self.asks.remove(index);
-             tracing::info!(order_id = id, "Cancelled ask order");
-             return removed;
-         }
-         // Order not found
-         tracing::warn!(order_id = id, "Order not found for cancellation");
-         None
+        tracing::info!(order_id = id, "Attempting to cancel order");
+    
+        // --- Performance Note (Step 7 Refinement) ---
+        // Finding the order by iterating (`position()`) and removing from VecDeque (`remove()`)
+        // are both potentially O(n) operations (linear time complexity relative to the
+        // number of orders on that side of the book).
+        // For a truly low-latency system with many orders, a different structure is needed,
+        // typically involving a HashMap<OrderId, ...> for fast lookups combined with
+        // sorted structures holding references/IDs (e.g., BTreeMap, custom heap).
+        // We keep VecDeque here for simplicity in this project.
+        // --- End Performance Note ---
+    
+    
+        // Find the index in bids
+        if let Some(index) = self.bids.iter().position(|o| o.id == id) {
+            // Remove the order by index and return it
+            let removed = self.bids.remove(index); // O(n) removal
+            tracing::info!(order_id = id, "Cancelled bid order");
+            return removed;
+        }
+    
+        // Find the index in asks if not in bids
+        if let Some(index) = self.asks.iter().position(|o| o.id == id) {
+            // Remove the order by index and return it
+            let removed = self.asks.remove(index); // O(n) removal
+            tracing::info!(order_id = id, "Cancelled ask order");
+            return removed;
+        }
+    
+        // Order not found
+        tracing::warn!(order_id = id, "Order not found for cancellation");
+        None
     }
     // --- End OrderBook impl ---
 }
