@@ -96,82 +96,86 @@ impl OrderBook {
         tracing::debug!(book = ?self, "Book state after match attempt");
     }
 
-    fn try_match(&mut self) {
-        tracing::debug!("Attempting match...");
-        // Loop to handle multiple matches from one add
-        while let (Some(best_bid), Some(best_ask)) = (self.bids.front_mut(), self.asks.front_mut()) {
+  // try and match
+  fn try_match(&mut self) {
+    tracing::debug!("Attempting match...");
+    // Loop while both sides have orders
+    while !self.bids.is_empty() && !self.asks.is_empty() {
+
+        // Check price without mutable borrow first (more efficient if no match)
+        let can_match = {
+            let best_bid = self.bids.front().unwrap(); // Safe due to loop condition
+            let best_ask = self.asks.front().unwrap(); // Safe due to loop condition
             tracing::debug!(bid_price = best_bid.price, bid_qty = best_bid.quantity, ask_price = best_ask.price, ask_qty = best_ask.quantity, "Checking best bid/ask");
+            best_bid.price >= best_ask.price
+        };
 
-            // Match condition: highest bid price >= lowest ask price?
-            if best_bid.price >= best_ask.price {
-                tracing::info!(bid_id = best_bid.id, ask_id = best_ask.id, price = best_ask.price, "MATCH FOUND!"); // Match at the ask price (or bid, could be either if equal)
+        if can_match {
+            // Prices cross, get mutable references and perform match
+            let best_bid_mut = self.bids.front_mut().unwrap();
+            let best_ask_mut = self.asks.front_mut().unwrap();
 
-                let matched_quantity = std::cmp::min(best_bid.quantity, best_ask.quantity);
-                tracing::info!(quantity = matched_quantity, "Matched Quantity");
+            tracing::info!(bid_id = best_bid_mut.id, ask_id = best_ask_mut.id, price = best_ask_mut.price, "MATCH FOUND!");
 
-                // Reduce quantities
-                best_bid.quantity -= matched_quantity;
-                best_ask.quantity -= matched_quantity;
+            let matched_quantity = std::cmp::min(best_bid_mut.quantity, best_ask_mut.quantity);
+            tracing::info!(quantity = matched_quantity, "Matched Quantity");
 
-                let bid_id = best_bid.id; // Store IDs before potential removal
-                let ask_id = best_ask.id;
-                let bid_fully_filled = best_bid.quantity == 0;
-                let ask_fully_filled = best_ask.quantity == 0;
+            best_bid_mut.quantity -= matched_quantity;
+            best_ask_mut.quantity -= matched_quantity;
 
-                // Remove filled orders (quantity is 0)
-                if bid_fully_filled {
-                    self.bids.pop_front(); // Remove the filled bid
-                    tracing::info!(order_id = bid_id, "Bid order fully filled and removed.");
-                }
-                if ask_fully_filled {
-                    self.asks.pop_front(); // Remove the filled ask
-                    tracing::info!(order_id = ask_id, "Ask order fully filled and removed.");
-                }
+            let bid_id = best_bid_mut.id;
+            let ask_id = best_ask_mut.id;
+            let bid_fully_filled = best_bid_mut.quantity == 0;
+            let ask_fully_filled = best_ask_mut.quantity == 0;
 
-                // If either side was not fully filled, the loop must stop
-                // because the remaining part of that order needs to stay.
-                // If both were filled, we continue checking the *new* front orders.
-                 if !bid_fully_filled || !ask_fully_filled {
-                    tracing::debug!("Partial fill occurred, stopping match attempts for this cycle.");
-                    break;
-                 }
-                 // Both were filled, continue loop to check next pair
-
-            } else {
-                // Prices don't cross, no match possible with these two orders
-                tracing::debug!("No match possible (bid price < ask price)");
-                break; // Exit the while loop, no more matches possible
+            // Remove fully filled orders
+            if bid_fully_filled {
+                self.bids.pop_front();
+                tracing::info!(order_id = bid_id, "Bid order fully filled and removed.");
             }
-        } // End of while loop
+            if ask_fully_filled {
+                self.asks.pop_front();
+                tracing::info!(order_id = ask_id, "Ask order fully filled and removed.");
+            }
+             // Loop continues automatically to check the new front orders (or the partially filled ones)
 
-        if self.bids.is_empty() || self.asks.is_empty() {
-            tracing::debug!("No match possible (one side is empty)");
+        } else {
+            // Prices don't cross, no more matches possible in this cycle
+            tracing::debug!("No match possible (bid price < ask price)");
+            break; // Exit the while loop
         }
-    }
+    } // End of while loop
+
+    tracing::debug!("Finished matching cycle.");
+}
 
 
     // --- FIX 2: ADD OrderBook Modify and Cancel Methods ---
     pub fn modify_order(&mut self, id: OrderId, new_quantity: u64) -> Option<Order> {
-
         if new_quantity == 0 {
-            // Explicitly handle quantity 0 as a cancellation request.
-            tracing::warn!(order_id = id, "Modification requested with quantity
-            0. Redirecting to cancel order.
-            ");
+            tracing::warn!(order_id = id, "Modification requested with quantity 0. Redirecting to cancel order.");
             return self.cancel_order(id);
         }
-
-        if let Some(order) = self.bids.iter_mut().find(|o| o.id == id){
+    
+        // Search bids
+        if let Some(order) = self.bids.iter_mut().find(|o| o.id == id) {
             tracing::info!(order_id = id, old_qty = order.quantity, new_qty = new_quantity, "Modifying bid order quantity");
-                order.quantity = new_quantity;
-
-
-                return Some(order.clone());
+            order.quantity = new_quantity;
+            return Some(order.clone());
         }
-
-        tracing::warn!(order_id = id, "Order not for modification");
+    
+        // --- ADD THIS BLOCK BACK ---
+        // Search asks if not found in bids
+        if let Some(order) = self.asks.iter_mut().find(|o| o.id == id) {
+            tracing::info!(order_id = id, old_qty = order.quantity, new_qty = new_quantity, "Modifying ask order quantity");
+            order.quantity = new_quantity;
+            return Some(order.clone());
+        }
+        // --- END OF ADDED BLOCK ---
+    
+        // Order not found
+        tracing::warn!(order_id = id, "Order not found for modification"); // Corrected warning message
         None
-      
     }
 
     pub fn cancel_order(&mut self, id: OrderId) -> Option<Order> {
@@ -372,3 +376,136 @@ async fn cancel_order_handler(
     }
 }
 // --- End API Handlers ---
+
+#[cfg(test)] // Only compile this module when running tests
+mod tests {
+    use super::*; // Import items from outer module
+
+    #[test]
+    fn test_order_creation() {
+        let order = Order::new(1, Side::Buy, 100, 50);
+        assert_eq!(order.id, 1);
+        assert_eq!(order.side, Side::Buy);
+        assert_eq!(order.price, 100);
+        assert_eq!(order.quantity, 50);
+        assert!(order.timestamp > 0);
+    }
+
+    #[test]
+    fn test_add_order_to_book() {
+        let mut book = OrderBook::new();
+        let buy_order = Order::new(1, Side::Buy, 100, 10);
+        let sell_order = Order::new(2, Side::Sell, 105, 20);
+
+        book.add_order(buy_order.clone());
+        book.add_order(sell_order.clone());
+
+        assert_eq!(book.bids.len(), 1);
+        assert_eq!(book.asks.len(), 1);
+        assert_eq!(book.bids.front().unwrap().id, buy_order.id);
+        assert_eq!(book.asks.front().unwrap().id, sell_order.id);
+    }
+
+    #[test]
+    fn test_simple_match_full() {
+        let mut book = OrderBook::new();
+        let buy_order = Order::new(1, Side::Buy, 100, 10);
+        let sell_order = Order::new(2, Side::Sell, 100, 10);
+
+        book.add_order(buy_order);
+        book.add_order(sell_order); // Match occurs here
+
+        // Assert: Both orders should be gone
+        assert!(book.bids.is_empty(), "Bids should be empty after full match");
+        assert!(book.asks.is_empty(), "Asks should be empty after full match");
+        // Removed misplaced #[test] and incorrect assertions/nested function from here
+    }
+
+    #[test]
+    fn test_simple_match_partial_buy_fills() {
+        let mut book = OrderBook::new();
+        let buy_order = Order::new(1, Side::Buy, 100, 5); // Buy 5
+        let sell_order = Order::new(2, Side::Sell, 100, 10); // Sell 10
+
+        book.add_order(buy_order);
+        book.add_order(sell_order); // Match occurs here
+
+        assert!(book.bids.is_empty(), "Bids should be empty after partial match (buy filled)");
+        assert_eq!(book.asks.len(), 1, "Asks should have 1 remaining order");
+        assert_eq!(book.asks.front().unwrap().id, 2);
+        assert_eq!(book.asks.front().unwrap().quantity, 5, "Remaining sell quantity should be 5");
+    }
+
+    #[test]
+    fn test_simple_match_partial_sell_fills() {
+        let mut book = OrderBook::new();
+        let buy_order = Order::new(1, Side::Buy, 100, 10); // Buy 10
+        let sell_order = Order::new(2, Side::Sell, 100, 5); // Sell 5
+
+        book.add_order(buy_order);
+        book.add_order(sell_order); // Match occurs here
+
+        assert!(book.asks.is_empty(), "Asks should be empty after partial match (sell filled)");
+        assert_eq!(book.bids.len(), 1, "Bids should have 1 remaining order");
+        assert_eq!(book.bids.front().unwrap().id, 1);
+        assert_eq!(book.bids.front().unwrap().quantity, 5, "Remaining buy quantity should be 5");
+    }
+
+    // Correctly placed test_no_match_price_gap
+    #[test]
+    fn test_no_match_price_gap() {
+        let mut book = OrderBook::new();
+        // Fix: Add underscore to unused variables
+        let _buy_order = Order::new(1, Side::Buy, 100, 10);
+        let _sell_order = Order::new(2, Side::Sell, 105, 10);
+
+        book.add_order(_buy_order.clone());
+        book.add_order(_sell_order.clone());
+
+        // Correct Assertions: No match occurred, both orders remain
+        assert_eq!(book.bids.len(), 1, "Bids should still contain the buy order");
+        assert_eq!(book.asks.len(), 1, "Asks should still contain the sell order");
+        assert_eq!(book.bids.front().unwrap().id, 1); // Check ID
+        assert_eq!(book.asks.front().unwrap().id, 2); // Check ID
+    }
+
+    #[test]
+    fn test_match_with_better_price() {
+        let mut book = OrderBook::new();
+        let buy_order = Order::new(1, Side::Buy, 105, 10); // Buy higher
+        let sell_order = Order::new(2, Side::Sell, 100, 10); // Sell lower
+
+        book.add_order(buy_order);
+        book.add_order(sell_order); // Match occurs here
+
+        assert!(book.bids.is_empty(), "Bids should be empty after match");
+        assert!(book.asks.is_empty(), "Asks should be empty after match"); // Fixed typo: empthy -> empty
+    }
+
+    #[test]
+    fn test_multiple_matches_from_one_order() {
+        let mut book = OrderBook::new();
+        // Setup: Sell 5@100 (1), Sell 15@101 (2). Then Buy 15@101 (3).
+        let sell_order1 = Order::new(1, Side::Sell, 100, 5);
+        let sell_order2 = Order::new(2, Side::Sell, 101, 15); // Original quantity was 15
+        let buy_order = Order::new(3, Side::Buy, 101, 15);
+
+        book.add_order(sell_order1); // Add Sell 1
+        book.add_order(sell_order2); // Add Sell 2
+        book.add_order(buy_order);   // Add Buy -> triggers matches
+
+        // Expected Outcome:
+        // 1. Buy 3 (15@101) vs Sell 1 (5@100) -> Match 5. Buy 3 is now 10@101. Sell 1 gone.
+        // 2. Buy 3 (10@101) vs Sell 2 (15@101) -> Match 10. Buy 3 is now 0@101. Sell 2 is now 5@101. Buy 3 gone.
+        // Final: Bids empty. Asks has Order 2 with Qty 5.
+
+        // Corrected Assertions:
+        assert!(book.bids.is_empty(), "Bids should be empty after buy order is fully matched");
+        assert_eq!(book.asks.len(), 1, "Asks should have 1 remaining order");
+        assert_eq!(book.asks.front().unwrap().id, 2, "Remaining ask should be order 2");
+        assert_eq!(book.asks.front().unwrap().quantity, 5, "Remaining quantity for ask order 2 should be 5");
+    }
+}
+// --- End Unit Tests ---
+
+
