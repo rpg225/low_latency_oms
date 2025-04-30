@@ -95,6 +95,7 @@ impl OrderBook {
 
         tracing::debug!(book = ?self, "Book state after match attempt");
     }
+    
 
   // try and match
   fn try_match(&mut self) {
@@ -436,6 +437,7 @@ mod tests {
         assert_eq!(book.asks.front().unwrap().quantity, 5, "Remaining sell quantity should be 5");
     }
 
+
     #[test]
     fn test_simple_match_partial_sell_fills() {
         let mut book = OrderBook::new();
@@ -505,6 +507,123 @@ mod tests {
         assert_eq!(book.asks.front().unwrap().id, 2, "Remaining ask should be order 2");
         assert_eq!(book.asks.front().unwrap().quantity, 5, "Remaining quantity for ask order 2 should be 5");
     }
+
+    #[test]
+    fn test_modify_order_quantity_bid(){
+        let mut book = OrderBook::new();
+        let order1 = Order::new(1, Side::Buy, 100, 10);
+        book.add_order(order1);
+
+        let result = book.modify_order(1, 5);
+
+        // Assert: Modification successfulm quantity updated
+        assert!(result.is_some(), "Modification shoul return the modified");
+        assert_eq!(result.as_ref().unwrap().id, 1);
+        assert_eq!(result.as_ref().unwrap().quantity, 5);
+        assert_eq!(book.bids.len(), 1);
+        assert_eq!(book.bids.front().unwrap().quantity, 5, "Quantity in book should be updater");
+    }
+
+    #[test]
+    fn test_modify_order_quantity_ask(){
+        let mut book = OrderBook::new();
+        let order1 = Order::new(1, Side::Sell, 105, 20);
+        book.add_order(order1);
+
+        // Modify quantity
+        let result = book.modify_order(1, 15);
+
+        // Assert: Modification successful, quantity update
+        assert!(result.is_some());
+        assert_eq!(result.as_ref().unwrap().id, 1);
+        assert_eq!(book.asks.len(), 1);
+        assert_eq!(book.asks.front().unwrap().quantity, 15);
+    }
+
+    #[test]
+    fn test_modify_order_not_found(){
+        let mut book = OrderBook::new();
+        let order1 = Order::new(1, Side::Buy, 100, 10);
+        book.add_order(order1);
+
+        // Try to modify a non-existent ID
+        let result = book.modify_order(999, 5);
+
+        assert!(result.is_none(), "Modifying non-existent order should return None");
+        assert_eq!(book.bids.len(), 1);
+        assert_eq!(book.bids.front().unwrap().id, 1);
+    }
+
+    #[test]
+    fn test_modify_order_zero_quantity_cancels(){
+        let mut book = OrderBook::new();
+        let order1 = Order::new(1, Side::Buy, 100, 10);
+        book.add_order(order1);
+
+        let result = book.modify_order(1, 0);
+
+
+        assert!(result.is_some(), "Modify with qty 0 should return the cancelled order via cancel_order");
+        assert_eq!(result.unwrap().id, 1 , "Returned order should have the correct ID");
+        assert!(book.bids.is_empty(), "Book should be empty after modify to zero quantity");
+    }
+
+    #[test]
+    fn test_cancel_order_bid() {
+        let mut book = OrderBook::new();
+        let order1 = Order::new(1, Side::Buy, 100, 10);
+        let order2 = Order::new(2, Side::Buy, 99, 5);
+        book.add_order(order1.clone());
+        book.add_order(order2.clone());
+
+        assert_eq!(book.bids.len(), 2);
+
+        // Cancel order 1
+        let result = book.cancel_order(1);
+
+        // Assert: Cancellation successful, order 1 removed, order 2 remains
+        assert!(result.is_some(), "Cancellation should return the cancelled order");
+        assert_eq!(result.unwrap().id, 1); // Check it's the correct order
+        assert_eq!(book.bids.len(), 1, "Only one bid should remain");
+        assert_eq!(book.bids.front().unwrap().id, 2, "Remaining bid should be order 2");
+    }
+
+    #[test]
+    fn test_cancel_order_ask() {
+        let mut book = OrderBook::new();
+        let order1 = Order::new(1, Side::Sell, 105, 10);
+        let order2 = Order::new(2, Side::Sell, 110, 5);
+        book.add_order(order1.clone());
+        book.add_order(order2.clone());
+
+        assert_eq!(book.asks.len(), 2);
+
+        // Cancel order 1
+        let result = book.cancel_order(1);
+
+        // Assert: Cancellation successful, order 1 removed, order 2 remains
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, 1);
+        assert_eq!(book.asks.len(), 1);
+        assert_eq!(book.asks.front().unwrap().id, 2);
+    }
+
+    #[test]
+    fn test_cancel_order_not_found() {
+        let mut book = OrderBook::new();
+        let order1 = Order::new(1, Side::Buy, 100, 10);
+        book.add_order(order1.clone());
+
+        // Try to cancel a non-existent ID
+        let result = book.cancel_order(999);
+
+        // Assert: Cancellation failed (None returned), book unchanged
+        assert!(result.is_none(), "Cancelling non-existent order should return None");
+        assert_eq!(book.bids.len(), 1); // Original order still there
+        assert_eq!(book.bids.front().unwrap().id, 1);
+    }
+
+
 }
 // --- End Unit Tests ---
 
