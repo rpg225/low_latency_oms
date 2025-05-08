@@ -28,10 +28,10 @@ A core Order Management System (OMS) built in Rust, designed as a learning proje
 
 2.  **Clone the repository:**
     ```bash
-    git clone <your-repository-url>
+    git clone https://github.com/rpg225/low_latency_oms
     cd low-latency-oms
     ```
-    *(Replace `<your-repository-url>` with the actual URL of your GitHub repository)*
+
 
 3.  **Build the project:**
     ```bash
